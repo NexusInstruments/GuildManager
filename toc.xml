@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Addon Author="Chronosis" APIVersion="11" Name="GuildManager" Description="Manage your guild ranks, main/alts, and guild statistics">
+<Addon Author="Chronosis" APIVersion="12" Name="GuildManager" Description="Manage your guild ranks, main/alts, and guild statistics">
+  <Script Name="libs/SimpleUtils/SimpleUtils.lua"/>
+  <Script Name="libs/XmlDocument/XmlDocument.lua"/>
+  <Script Name="libs/PixiePlot/PixiePlot.lua"/>
+  <Script Name="libs/JsonUtils/JsonUtils-1.0.lua"/>
   <Script Name="GuildManager.lua"/>
   <Form Name="GuildManager.xml"/>
 </Addon>

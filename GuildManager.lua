@@ -1,20 +1,30 @@
 ------------------------------------------------------------------------------------------------
+--  GuildManager ver. @project-version@
+--  Build @project-hash@
+--  Copyright (c) NexusInstruments. All rights reserved
+--
+--  https://github.com/NexusInstruments/GuildManager
+------------------------------------------------------------------------------------------------
 -- GuildManager.lua
 ------------------------------------------------------------------------------------------------
+
 require "Window"
+require "Item"
+require "GameLib"
 
 -----------------------------------------------------------------------------------------------
 -- GuildManager Definition
 -----------------------------------------------------------------------------------------------
 local GuildManager= {}
---local Utils = Apollo.GetPackage("SimpleUtils-1.0").tPackage
+local Utils = Apollo.GetPackage("SimpleUtils").tPackage
+local PixiePlot = Apollo.GetPackage("Drafto:Lib:PixiePlot-1.4").tPackage
 
 -----------------------------------------------------------------------------------------------
 -- GuildManager constants
 -----------------------------------------------------------------------------------------------
 local Major, Minor, Patch, Suffix = 1, 0, 0, 0
 local AddonName = "GuildManager"
-local GUILDMANAGER_CURRENT_VERSION = string.format("%d.%d.%d%s", Major, Minor, Patch)
+local GUILDMANAGER_CURRENT_VERSION = string.format("%d.%d.%d%s", Major, Minor, Patch, Suffix)
 
 local tDefaultSettings = {
   version = GUILDMANAGER_CURRENT_VERSION,
@@ -28,8 +38,14 @@ local tDefaultSettings = {
 
 local tDefaultState = {
   isOpen = false,
+
   windows = {           -- These store windows for lists
     main = nil
+  },
+  listItems = {
+    sortingCmpFn = {},
+    tabsInfo = {},
+    allRosters = {}
   }
 }
 
@@ -42,9 +58,9 @@ function GuildManager:new(o)
   self.__index = self
 
   -- Saved and Restored values are stored here.
-  o.settings = shallowcopy(tDefaultSettings)
+  o.settings = deepcopy(tDefaultSettings)
   -- Volatile values are stored here. These are impermanent and not saved between sessions
-  o.state = shallowcopy(tDefaultState)
+  o.state = deepcopy(tDefaultState)
 
   return o
 end
@@ -61,9 +77,9 @@ function GuildManager:Init()
   }
   Apollo.RegisterAddon(self, bHasConfigureFunction, strConfigureButtonText, tDependencies)
 
-  self.settings = shallowcopy(tDefaultSettings)
+  self.settings = deepcopy(tDefaultSettings)
   -- Volatile values are stored here. These are impermanent and not saved between sessions
-  self.state = shallowcopy(tDefaultState)
+  self.state = deepcopy(tDefaultState)
 end
 
 -----------------------------------------------------------------------------------------------
@@ -76,7 +92,19 @@ function GuildManager:OnLoad()
   Apollo.RegisterEventHandler("Generic_GuildManager", "OnToggleGuildManager", self)
   Apollo.RegisterEventHandler("InterfaceMenuListHasLoaded", "OnInterfaceMenuListHasLoaded", self)
 
-  Apollo.RegisterSlashCommand("sample", "OnSlashCommand", self)
+  Apollo.RegisterSlashCommand("guildm", "OnSlashCommand", self)
+
+  Apollo.RegisterEventHandler("GuildRoster", "OnGuildRoster", self)
+  Apollo.RegisterEventHandler("GuildMemberChange", "OnGuildMemberChange", self) -- General purpose update method
+  Apollo.RegisterEventHandler("GuildChange", "OnGuildChanged", self) -- notification that a guild was added / removed.
+  Apollo.RegisterEventHandler("GuildName", "OnGuildChanged", self) -- notification that the guild name has changed.
+  Apollo.RegisterEventHandler("GuildInvite", "OnGuildInvite", self) -- notification you got a guild/circle invite
+
+  Apollo.RegisterEventHandler("GuildLoaded", "OnGuildLoaded", self) -- notification that your guild or a society has loaded.
+  Apollo.RegisterEventHandler("GuildFlags", "OnGuildFlags", self) -- notification that your guild's flags have changed.
+  Apollo.RegisterEventHandler("GuildName", "OnGuildName", self) -- notification that the guild name has changed.
+
+  Apollo.GetPackage("Json:Utils-1.0").tPackage:Embed(self)
 end
 
 -----------------------------------------------------------------------------------------------
@@ -91,7 +119,7 @@ function GuildManager:OnDocLoaded()
   self.state.windows.main:Show(false)
 
   -- Restore positions and junk
-  self:RefreshUI()
+  --self:RefreshUI()
 end
 
 -----------------------------------------------------------------------------------------------
@@ -157,7 +185,7 @@ function GuildManager:OnRestore(eType, tSavedData)
     self.settings.version = GuildManager_CURRENT_VERSION
 
   else
-    self.tConfig = deepcopy(tDefaultOptions)
+    self.settings = deepcopy(tDefaultSettings)
   end
 end
 
@@ -180,53 +208,98 @@ function GuildManager:PrintDB(str)
   end
 end
 
----------------------------------------------------------------------------------------------------
--- GuildManager General UI Functions
----------------------------------------------------------------------------------------------------
-function GuildManager:OnToggleGuildManager()
-  if self.state.isOpen == true then
-    self.state.isOpen = false
-    self:SaveLocation()
-    self:CloseMain()
-  else
-    self.state.isOpen = true
-    self.state.windows.main:Invoke() -- show the window
-  end
-end
-
-function GuildManager:SaveLocation()
-  self.settings.positions.main = self.state.windows.main:GetLocation():ToTable()
-end
-
-function GuildManager:CloseMain()
-  self.state.windows.main:Close()
-end
-
-function GuildManager:OnGuildManagerClose( wndHandler, wndControl, eMouseButton )
-  self.state.isOpen = false
-  self:SaveLocation()
-  self:CloseMain()
-end
-
-function GuildManager:OnGuildManagerClosed( wndHandler, wndControl )
-  self:SaveLocation()
-  self.state.isOpen = false
-end
-
----------------------------------------------------------------------------------------------------
--- GuildManager RefreshUI
----------------------------------------------------------------------------------------------------
-function GuildManager:RefreshUI()
-  -- Location Restore
-  if self.settings.positions.main ~= nil and self.settings.positions.main ~= {} then
-    locSavedLoc = WindowLocation.new(self.settings.positions.main)
-    self.state.windows.main:MoveToLocation(locSavedLoc)
-  end
-end
-
 function GuildManager:LoadDefaults()
   -- Load Defaults here
   self:RefreshUI()
+end
+
+-----------------------------------------------------------------------------------------------
+-- GuildManager functionality
+-----------------------------------------------------------------------------------------------
+function GuildManager:OnGuildRoster(guildCurr, tRoster) -- Event from CPP
+local currGID = self:GuildTabID(guildCurr)
+
+if self.state.AllRosters[currGID] == nil then
+    self.state.AllRosters[currGID] = {}
+    self:UpdateRelations(tRoster, currGID)
+end
+
+self:DEBUG("OnGuildRoster Got Data Event from CPP: " .. guildCurr:GetName())
+
+if not self:needRosterUpdate(guildCurr) then return end
+
+self:SetNewRosterForGrid(tRoster, currGID)
+end
+
+
+function GuildManager:OnGuildMemberChange(guildCurr)
+    self:DEBUG("OnGuildMemberChange Got Data: " .. guildCurr:GetName())
+
+    --Updating tooltip anyway
+
+    for k, v in pairs(self.state.tabsInfo) do
+        if self:isSameGuild(v.sName, v.nType, guildCurr:GetName(), guildCurr:GetType()) then
+            self:UpdateOnlineCountFor(v, guildCurr:GetOnlineMemberCount(), guildCurr:GetMemberCount())
+        end
+    end
+
+    if not self:needRosterUpdate(guildCurr) then return end
+
+
+    self.kCurrGuild:RequestMembers()
+end
+
+function GuildManager:needRosterUpdate(guildCurr)
+    if not self:IsVisible() then return false end
+    if self.kCurrGuild then
+        return self:isSameGuild(self.kCurrGuild:GetName(),
+            self.kCurrGuild:GetType(),
+            guildCurr:GetName(),
+            guildCurr:GetType())
+    end
+
+    return false
+end
+
+function GuildManager:GuildTabID(guildCurr)
+    if guildCurr == nil then return nil end
+
+    for k, v in pairs(self.state.tabsInfo) do
+        if self:isSameGuild(v.sName, v.nType, guildCurr:GetName(), guildCurr:GetType()) then
+            return k
+        end
+    end
+
+    return nil
+end
+
+function GuildManager:isSameGuild(strName1, nType1, strName2, nType2)
+    return strName1 == strName2 and nType1 == nType2
+end
+
+function GuildManager:UpdateGuildAndCircleLists()
+    -- need this to take rosters for guilds and circles into memory
+    -- to show correct common social groups
+    local guilds = GuildLib.GetGuilds() or {}
+    for key, guildCurr in pairs(guilds) do
+        if guildCurr:GetType() == GuildLib.GuildType_Circle
+                or guildCurr:GetType() == GuildLib.GuildType_Guild then
+            guildCurr:RequestMembers()
+        end
+    end
+end
+
+function GuildManager:UpdateRelations(tRoster, nTabID)
+    if nTabID == ViragsSocial.TabGuild or (nTabID >= ViragsSocial.TabCircle1 and nTabID <= ViragsSocial.TabCircle5) then --circle or guild
+    for k, v in pairs(tRoster) do
+        local resultRel = self.ktRelationsDB[v.strName]
+        if resultRel == nil then
+            resultRel = {}
+            self.ktRelationsDB[v.strName] = resultRel
+        end
+        resultRel[nTabID] = true
+    end
+    end
 end
 -----------------------------------------------------------------------------------------------
 -- GuildManagerInstance
